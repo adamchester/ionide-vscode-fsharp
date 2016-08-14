@@ -105,29 +105,30 @@ module LanguageService =
     let compilerLocation () =
         "" |> request (url "compilerlocation")  0
 
-    let start (onListeningCallback: unit->unit) =
-        promise {
+    let start()  =
+        Promise.create<unit> (fun resolve reject ->
+            let mutable isStarted = false
             let path = (VSCode.getPluginPath "Ionide.Ionide-fsharp") + "/bin/FsAutoComplete.Suave.exe"
-            let child = if Process.isMono () then child_process.spawn("mono", [| path; string port|] |> ResizeArray) else child_process.spawn(path, [| string port|] |> ResizeArray)
+            let child = if Process.isMono ()
+                        then child_process.spawn("mono", [| path; string port|] |> ResizeArray)
+                        else child_process.spawn(path, [| string port|] |> ResizeArray)
             service <- Some child
-            child.stderr?on $ ("data", fun n -> Browser.console.error (n.ToString())) |> ignore
-
-            // Wait until FsAC sends the 'listener started' magic string until
-            // we inform the caller that it's ready to accept requests.
-            let x = child.stdout?on $ ("data", fun n ->
-                let isStartedMessage = (n.ToString().Contains(": listener started in"))
-                if isStartedMessage then onListeningCallback()
-                Browser.console.log ("[IONIDE-FSAC-SIG] started message?", isStartedMessage)
-                ()
+            child
+            |> Process.onError (fun e -> 
+                Browser.console.error (e.ToString())
+                // if we get an error before we see the 'listener started' message, we failed to start
+                if not isStarted then reject e 
             )
-            child.stdout?on $ ("data", fun n -> Browser.console.log (n.ToString())) |> ignore
-        }
-        |> Promise.fail (fun x ->
-            if Process.isMono () then
-                "Failed to start language services. Please check if mono is in PATH"
-            else
-                "Failed to start language services. Please check if Microsoft Build Tools 2013 are installed"
-            |> vscode.window.showErrorMessage
+            |> Process.onOutput (fun n ->
+                if not isStarted then
+                    // Wait until FsAC sends the 'listener started' magic string until
+                    // we inform the caller that it's ready to accept requests.
+                    isStarted <- (n.ToString().Contains(": listener started in"))
+                    if isStarted then resolve()
+                    Browser.console.log ("[IONIDE-FSAC-SIG] started", isStarted) |> ignore
+                else
+                    Browser.console.log (n.ToString()) |> ignore
+            )
             |> ignore
         )
 
